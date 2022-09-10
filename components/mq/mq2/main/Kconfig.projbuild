@@ -1,0 +1,8 @@
+menu "Example configuration"
+
+    config EXAMPLE_MQ_ID
+        int "mq sensor type"
+        default 0 if IDF_TARGET_ESP32 
+        help
+            mq sensor type in mq series
+endmenu
