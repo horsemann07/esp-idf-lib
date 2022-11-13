@@ -2,23 +2,18 @@
 #include "ssd1306.h"
 #include <esp_err.h>
 #include <esp_log.h>
+
 #include <i2cdev.h>
 #include <string.h>
 
 #define TAG (__FILENAME__)
-/// The following "raw" color names are kept for backwards client compatability
-/// They can be disabled by predefining this macro before including the Adafruit
-/// header client code will then need to be modified to use the scoped enum
-/// values directly
-#ifndef NO_ADAFRUIT_SSD1306_COLOR_COMPATIBILITY
-// #define COLOR_BLACK   (SSD1306_BLACK)   ///< Draw 'off' pixels
-// #define COLOR_WHITE   (SSD1306_WHITE)   ///< Draw 'on' pixels
-// #define COLOR_INVERSE (SSD1306_INVERSE) ///< Invert pixels
-#endif
+
+#define LOG_LOCAL_LEVEL (ESP_LOG_DEBUG)
+
 /// fit into the SSD1306_ naming scheme
-#define SSD1306_BLACK   (0) ///< Draw 'off' pixels
-#define SSD1306_WHITE   (1) ///< Draw 'on' pixels
-#define SSD1306_INVERSE (2) ///< Invert pixels
+// #define SSD1306_BLACK   (0) ///< Draw 'off' pixels
+// #define SSD1306_WHITE   (1) ///< Draw 'on' pixels
+// #define SSD1306_INVERSE (2) ///< Invert pixels
 
 #define SSD1306_MEMORYMODE          (0x20) ///< See datasheet
 #define SSD1306_COLUMNADDR          (0x21) ///< See datasheet
@@ -113,7 +108,20 @@
         return ret;                                                                                                    \
     }
 
-#define SWAP(a, b)      (((a) ^= (b)), ((b) ^= (a)), ((a) ^= (b))) ///< No-temp-var swap operation
+/**
+ * Macro which can be used to check the error code,
+ * and terminate the program in case the code is not ESP_OK.
+ * In debug mode, it prints the error code, error location to serial output.
+ */
+#define ESP_ERR_ON_INIT_FAIL(ret)                                                                                      \
+    if (ret != ESP_OK)                                                                                                 \
+    {                                                                                                                  \
+        ESP_LOGD(TAG, "[%s, %d] <%s> ", __func__, __LINE__, esp_err_to_name(ret));                                     \
+        goto END;                                                                                                      \
+    }
+
+///< No-temp-var swap operation
+#define SWAP(a, b)      (((a) ^= (b)), ((b) ^= (a)), ((a) ^= (b)))
 #define BIT_SET(a, b)   ((a) |= (1U << (b)))
 #define BIT_CLEAR(a, b) ((a) &= ~(1U << (b)))
 
@@ -155,7 +163,7 @@ esp_err_t ssd1306_write_data(const i2c_dev_t *i2c_dev, uint8_t data)
     return (i2c_dev_write_reg(i2c_dev, 0, (const void *)&data, 1));
 }
 
-//////////////////////////////////////////////////////////////////////////////////
+//////////////////////////// GFX LIBRARY //////////////////////////////////////
 
 static esp_err_t ssd1306_validate_cord(ssd1306_gfx_t *ssd1306_gfx, int16_t *x0, int16_t *y0, int16_t *x1, int16_t *y1)
 {
@@ -348,9 +356,12 @@ esp_err_t ssd1306_scroll(ssd1306_t *ssd1306, page_area_t start, page_area_t end,
     ssd1306_scroll_speed_t speed)
 {
     ESP_PARAM_CHECK(ssd1306);
-    if (start < ssd1306->spages || start < ssd1306->spages || end < ssd1306->spages || end < ssd1306->spages)
+
+    // set boundary start and end pg based on support pages
+    start = ((start < 0) ? 0 : start);
+    end = ((end >= ssd1306->spages) ? (ssd1306->spages - 1) : end);
+    if (start > end)
     {
-        ESP_LOGE(TAG, "%d height diplay support only %d spages", ssd1306->height, ssd1306->spages);
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -383,7 +394,6 @@ esp_err_t ssd1306_gfx_set_textsize(ssd1306_gfx_t *ssd1306_gfx, uint8_t size)
 }
 
 esp_err_t ssd1306_gfx_set_textcolor(ssd1306_gfx_t *ssd1306_gfx, uint16_t color)
-
 {
     ESP_PARAM_CHECK(ssd1306_gfx);
     // For 'transparent' background, we'll set the bg
@@ -507,6 +517,13 @@ esp_err_t ssd1306_screen_off(ssd1306_t *ssd1306)
     return (ssd1306_write_command(&ssd1306->i2c_dev, SSD1306_DISPLAYOFF));
 }
 
+esp_err_t ssd1306_screen_on(ssd1306_t *ssd1306)
+{
+    ESP_PARAM_CHECK(ssd1306);
+
+    return (ssd1306_write_command(&ssd1306->i2c_dev, SSD1306_DISPLAYON));
+}
+
 esp_err_t ssd1306_set_cursor(ssd1306_t *ssd1306, uint8_t lineNumber, uint8_t cursorPosition)
 {
     /* Move the Cursor to specified position only if it is in range */
@@ -622,20 +639,21 @@ esp_err_t ssd1306_init_desc(ssd1306_t *ssd1306, uint32_t sda, uint32_t scl, int 
 #if HELPER_TARGET_IS_ESP32
     ssd1306->i2c_dev.cfg.master.clk_speed = I2C_FREQ_HZ;
 #endif
-
+    ESP_LOGI(TAG, "i2c_dev: addr 0x%x: scl: %d, sda: %d, port %d", ssd1306->i2c_dev.addr,
+        ssd1306->i2c_dev.cfg.scl_io_num, ssd1306->i2c_dev.cfg.sda_io_num, ssd1306->i2c_dev.port);
     // init i2c
-    ret = i2c_dev_probe(&(ssd1306->i2c_dev), I2C_DEV_READ);
+    ret = i2c_dev_probe((const i2c_dev_t *)&ssd1306->i2c_dev, I2C_DEV_READ);
     if (ret != ESP_OK)
     {
         ESP_LOGE(TAG, "[%s, %d] device not available <%s>", __func__, __LINE__, esp_err_to_name(ret));
-        return ret;
+        // return ret;
     }
 
     ret = i2c_dev_create_mutex(&(ssd1306->i2c_dev));
     if (ret != ESP_OK)
     {
         ESP_LOGE(TAG, "[%s, %d] failed to create mutex for i2c dev. <%s>", __func__, __LINE__, esp_err_to_name(ret));
-        return ret;
+        goto END;
     }
 
     // Init sequence
@@ -644,20 +662,20 @@ esp_err_t ssd1306_init_desc(ssd1306_t *ssd1306, uint32_t sda, uint32_t scl, int 
         0x80,                                     // the suggested ratio 0x80
         SSD1306_SETMULTIPLEX };                   // 0xA8
 
-    ESP_ERROR_CDEBUG(ssd1306_write_commands(&(ssd1306->i2c_dev), (const uint8_t *)init1, ARRAY_SIZE(init1)));
+    ESP_ERR_ON_INIT_FAIL(ssd1306_write_commands(&(ssd1306->i2c_dev), (const uint8_t *)init1, ARRAY_SIZE(init1)));
 
     const uint8_t init2[] = { SSD1306_SETDISPLAYOFFSET, // 0xD3
         0x0,                                            // no offset
         SSD1306_SETSTARTLINE | 0x0,                     // line #0
         SSD1306_CHARGEPUMP };                           // 0x8D
-    ESP_ERROR_CDEBUG(ssd1306_write_commands(&(ssd1306->i2c_dev), (const uint8_t *)init2, ARRAY_SIZE(init2)));
+    ESP_ERR_ON_INIT_FAIL(ssd1306_write_commands(&(ssd1306->i2c_dev), (const uint8_t *)init2, ARRAY_SIZE(init2)));
 
-    ESP_ERROR_CDEBUG(ssd1306_write_command(&(ssd1306->i2c_dev), (vccstate == SSD1306_EXTERNALVCC) ? 0x10 : 0x14));
+    ESP_ERR_ON_INIT_FAIL(ssd1306_write_command(&(ssd1306->i2c_dev), (vccstate == SSD1306_EXTERNALVCC) ? 0x10 : 0x14));
     // ssd1306->dc = ((vccstate == SSD1306_EXTERNALVCC) ? 1 : 0);
     const uint8_t init3[] = { SSD1306_MEMORYMODE, // 0x20
         0x00,                                     // 0x0 act like ks0108
         SSD1306_SEGREMAP | 0x1, SSD1306_COMSCANDEC };
-    ESP_ERROR_CDEBUG(ssd1306_write_commands(&(ssd1306->i2c_dev), (const uint8_t *)init3, ARRAY_SIZE(init3)));
+    ESP_ERR_ON_INIT_FAIL(ssd1306_write_commands(&(ssd1306->i2c_dev), (const uint8_t *)init3, ARRAY_SIZE(init3)));
 
     uint8_t contrast = 0x8F;
     if (display == DISP_w128xh32)
@@ -679,7 +697,7 @@ esp_err_t ssd1306_init_desc(ssd1306_t *ssd1306, uint32_t sda, uint32_t scl, int 
     uint8_t init4[]
         = { SSD1306_SETCONTRAST, contrast, SSD1306_SETPRECHARGE, ((vccstate == SSD1306_EXTERNALVCC) ? 0x22 : 0xF1) };
 
-    ESP_ERROR_CDEBUG(ssd1306_write_commands(&(ssd1306->i2c_dev), (const uint8_t *)init4, ARRAY_SIZE(init4)));
+    ESP_ERR_ON_INIT_FAIL(ssd1306_write_commands(&(ssd1306->i2c_dev), (const uint8_t *)init4, ARRAY_SIZE(init4)));
     uint8_t init5[] = { SSD1306_SETVCOMDETECT, // 0xDB
         0x40,
         SSD1306_DISPLAYALLON_RESUME,                    // 0xA4
@@ -687,11 +705,15 @@ esp_err_t ssd1306_init_desc(ssd1306_t *ssd1306, uint32_t sda, uint32_t scl, int 
         SSD1306_DEACTIVATE_SCROLL, SSD1306_DISPLAYON }; // Main screen turn on
 
     init5[3] = (ssd1306->invert) ? SSD1306_INVERTDISPLAY : SSD1306_NORMALDISPLAY;
-    ESP_ERROR_CDEBUG(ssd1306_write_commands(&(ssd1306->i2c_dev), (const uint8_t *)init5, ARRAY_SIZE(init5)));
+    ESP_ERR_ON_INIT_FAIL(ssd1306_write_commands(&(ssd1306->i2c_dev), (const uint8_t *)init5, ARRAY_SIZE(init5)));
 
     // no need to check.
-    ssd1306_clear_display(ssd1306);
+    ESP_ERR_ON_INIT_FAIL(ssd1306_clear_display(ssd1306));
 
+    return ret;
+
+END:
+    ESP_ERROR_CHECK(ssd1306_deinit_desc(ssd1306));
     return ret;
 }
 
